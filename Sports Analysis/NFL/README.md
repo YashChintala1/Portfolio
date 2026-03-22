@@ -75,16 +75,6 @@ Key Feature:
 
 ---
 
-## 📂 Project Structure
-
-```
-.
-├── completed_midterm.html   # Rendered report
-├── README.md                # Project documentation
-```
-
----
-
 ## ⚠️ Disclaimer
 
 This project is part of academic coursework and is shared solely for the purpose of demonstrating my understanding of statistical modeling and machine learning concepts.

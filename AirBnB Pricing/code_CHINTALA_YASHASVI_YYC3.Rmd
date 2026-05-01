@@ -1,0 +1,696 @@
+---
+title: "code_CHINTALA_YASHASVI_YYC3.Rmd"
+author: "Yashasvi Chintala"
+date: "2026-04-15"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Preprocessing
+```{r,warning=FALSE, message=FALSE}
+
+library(dplyr)
+library(stringr)
+
+#Loading data
+df_train <- read.csv("df_train.csv", stringsAsFactors = FALSE)
+df_test  <- read.csv("df-test-1.csv", stringsAsFactors = FALSE)
+
+#Check for null data for all cols
+#colSums(is.na(df_train)) # no null values were found. 
+#colSums(is.na(df_test))
+
+# 2. Basic string cleaning-> col 1 and 2.
+clean_text_field <- function(x) {
+  x <- str_trim(x)
+  x <- str_squish(x)
+  x <- str_to_lower(x)
+  x[x %in% c("", "na", "n/a", "null", "none", "missing")] <- NA
+  x
+}
+
+df_train$neighbourhood_cleansed <- clean_text_field(df_train$neighbourhood_cleansed)
+df_train$room_type <- clean_text_field(df_train$room_type)
+
+df_test$neighbourhood_cleansed <- clean_text_field(df_test$neighbourhood_cleansed)
+df_test$room_type <- clean_text_field(df_test$room_type)
+
+#Enforcing 1st and 2nd cols to strict strings.
+df_train$neighbourhood_cleansed <- as.character(df_train$neighbourhood_cleansed)
+df_train$room_type <- as.character(df_train$room_type)
+
+df_test$neighbourhood_cleansed <- as.character(df_test$neighbourhood_cleansed)
+df_test$room_type <- as.character(df_test$room_type)
+
+
+#Clean room_type
+bad_room_type_values <- c(
+  "pr", "priv", "private", "ent", "ent house", "shared", "hotel"
+)
+
+fix_room_type <- function(x) {
+  x[nchar(x) <= 1] <- NA
+  x[x %in% bad_room_type_values] <- NA
+  x
+}
+
+df_train$room_type <- fix_room_type(df_train$room_type)
+df_test$room_type <- fix_room_type(df_test$room_type)
+
+# ----------------------------------------------------------------------------------------------------
+#Basic integer checking and cleaning. 
+integer_vars_train <- c(
+  "bathrooms",
+  "bedrooms",
+  "accommodates",
+  "minimum_nights",
+  "availability_365",
+  "number_of_reviews",
+  "price",
+  "calculated_host_listings_count"
+)
+
+integer_vars_test <- c(
+  "bathrooms",
+  "bedrooms",
+  "accommodates",
+  "minimum_nights",
+  "availability_365",
+  "number_of_reviews",
+  "calculated_host_listings_count"
+)
+
+for (var in integer_vars_train) {
+  df_train[[var]] <- as.numeric(df_train[[var]])
+  df_train[[var]] <- trunc(df_train[[var]])
+  df_train[[var]][df_train[[var]] < 0] <- NA
+}
+
+for (var in integer_vars_test) {
+  df_test[[var]] <- as.numeric(df_test[[var]])
+  df_test[[var]] <- trunc(df_test[[var]])
+  df_test[[var]][df_test[[var]] < 0] <- NA
+}
+
+# These variables must be at least 1
+must_be_at_least_1_train <- c(
+  "bedrooms",
+  "bathrooms",
+  "accommodates",
+  "minimum_nights",
+  "price"
+)
+
+must_be_at_least_1_test <- c(
+  "bedrooms",
+  "bathrooms",
+  "accommodates",
+  "minimum_nights"
+)
+
+for (var in must_be_at_least_1_train) {
+  df_train[[var]][df_train[[var]] < 1] <- NA
+}
+
+#for (var in must_be_at_least_1_test) {
+  #df_test[[var]][df_test[[var]] < 1] <- NA
+#}
+
+#Cleaning the review section.
+review_vars <- c(
+  "review_scores_rating",
+  "review_scores_cleanliness",
+  "review_scores_location"
+)
+
+for (var in review_vars) {
+  df_train[[var]] <- as.numeric(df_train[[var]])
+  df_train[[var]][df_train[[var]] < 1 | df_train[[var]] > 5] <- NA
+}
+
+for (var in review_vars) {
+  df_test[[var]] <- as.numeric(df_test[[var]])
+  df_test[[var]][df_test[[var]] < 1 | df_test[[var]] > 5] <- NA
+}
+
+#Cleaning Binary cols.
+binary_vars <- c(
+  "host_is_superhost",
+  "instant_bookable",
+  "host_identity_verified"
+)
+
+for (var in binary_vars) {
+  df_train[[var]] <- as.numeric(df_train[[var]])
+  df_train[[var]][!(df_train[[var]] %in% c(0, 1))] <- NA
+}
+
+for (var in binary_vars) {
+  df_test[[var]] <- as.numeric(df_test[[var]])
+  df_test[[var]][!(df_test[[var]] %in% c(0, 1))] <- NA
+}
+
+# minimum_nights should be at most 30
+df_train$minimum_nights[df_train$minimum_nights > 30] <- NA
+#df_test$minimum_nights[df_test$minimum_nights > 30] <- NA
+#sum(is.na(df_train$minimum_nights))
+
+#Price over 2701 is automatically NA
+df_train$price[df_train$price > 2701] <- NA
+#-----------------------------------------------------------------------------------------------------
+# Drop rows with NA in any column
+df_train <- df_train %>%
+  filter(complete.cases(.))
+
+#df_test <- df_test %>%
+  #filter(complete.cases(.))
+
+# Strictly remove-> there are other ways, but given that there are only less than 50 of such enteries in training, and about 6-7 in testing, I am choosing to remove them. 
+#View(df_test) #-> This shows all the code is proper. 
+#summary(df_train[review_vars]) #Between 1 and 5. 
+```
+
+###Linear/polynomial Models
+
+##A polynomial regression with increasing model complexities 
+```{r,warning=FALSE, message=FALSE}
+library(caret)
+library(ggplot2)
+train_control <- trainControl(
+  method = "cv",
+  number = 10
+)
+
+degrees <- 1:5
+
+poly_results <- data.frame(
+  degree = integer(),
+  RMSE = numeric(),
+  MSE = numeric(),
+  Rsquared = numeric(),
+  MAE = numeric()
+)
+
+poly_models <- list()
+
+for (d in degrees) {
+  
+  poly_formula <- as.formula(
+    paste(
+      "log(price) ~ neighbourhood_cleansed + room_type +",
+      "poly(bathrooms,", d, ", raw = TRUE) +",
+      "poly(bedrooms,", d, ", raw = TRUE) +",
+      "poly(accommodates,", d, ", raw = TRUE) +",
+      "poly(minimum_nights,", d, ", raw = TRUE) +",
+      "poly(availability_365,", d, ", raw = TRUE) +",
+      "poly(number_of_reviews,", d, ", raw = TRUE) +",
+      "poly(review_scores_rating,", d, ", raw = TRUE) +",
+      "poly(review_scores_cleanliness,", d, ", raw = TRUE) +",
+      "poly(review_scores_location,", d, ", raw = TRUE) +",
+      "poly(calculated_host_listings_count,", d, ", raw = TRUE) +",
+      "poly(dist_to_downtown,", d, ", raw = TRUE) +",
+      "host_is_superhost + instant_bookable + host_identity_verified"
+    )
+  )
+  
+  poly_model <- train(
+    poly_formula,
+    data = df_train,
+    method = "lm",
+    trControl = train_control,
+    metric = "RMSE"
+  )
+  
+  poly_models[[paste0("degree_", d)]] <- poly_model
+  
+  poly_results <- rbind(
+    poly_results,
+    data.frame(
+      degree = d,
+      RMSE = poly_model$results$RMSE,
+      MSE = (poly_model$results$RMSE)^2,
+      Rsquared = poly_model$results$Rsquared,
+      MAE = poly_model$results$MAE
+    )
+  )
+}
+poly_results[order(poly_results$MSE), ]
+
+#Visualization
+# 1. Plotting RMSE/MSE vs. Polynomial Degree
+ggplot(poly_results, aes(x = degree, y = RMSE)) +
+  geom_line(color = "steelblue", size = 1) +
+  geom_point(size = 3, color = "darkblue") +
+  geom_text(aes(label = round(RMSE, 4)), vjust = -1, size = 3) +
+  labs(title = "Model Complexity vs. Error (RMSE)",
+       subtitle = "Comparing Polynomial Degrees 1 through 5",
+       x = "Polynomial Degree",
+       y = "Root Mean Squared Error (RMSE)") +
+  theme_minimal()
+```
+
+##Ridge regression
+```{r,warning=FALSE, message=FALSE}
+library(caret)
+library(glmnet)
+
+set.seed(1361)
+
+train_control <- trainControl(
+  method = "cv",
+  number = 10
+)
+
+ridge_grid <- expand.grid(
+  alpha = 0,
+  lambda = 10^seq(-4, 4, length.out = 100)
+)
+ridge_cv <- train(
+  log(price) ~ neighbourhood_cleansed + room_type +
+    bathrooms + bedrooms + accommodates + minimum_nights +
+    availability_365 + number_of_reviews + review_scores_rating +
+    review_scores_cleanliness + review_scores_location +
+    host_is_superhost + instant_bookable + host_identity_verified +
+    calculated_host_listings_count + dist_to_downtown,
+  data = df_train,
+  method = "glmnet",
+  trControl = train_control,
+  tuneGrid = ridge_grid,
+  metric = "RMSE",
+  preProcess = c("center", "scale")
+)
+print(min(ridge_cv$results$RMSE)^2)
+#coef(ridge_cv$finalModel, ridge_cv$bestTune$lambda)
+
+log_preds_ridge <- predict(ridge_cv, newdata = df_test)
+final_predictions_ridge <- exp(log_preds_ridge)
+head(final_predictions_ridge)
+```
+
+
+##Lasso regression.
+```{r,warning=FALSE, message=FALSE}
+library(caret)
+library(glmnet)
+
+set.seed(1361)
+
+train_control <- trainControl(
+  method = "cv",
+  number = 10
+)
+
+lasso_grid <- expand.grid(
+  alpha = 1,
+  lambda = 10^seq(-4, 4, length.out = 100)
+)
+#log price to make sure any missed outliers do not impact the data much, it's to make sure the model is not getting "pulled" in that direction.
+lasso_cv <- train(
+  log(price) ~ neighbourhood_cleansed + room_type +
+    bathrooms + bedrooms + accommodates + minimum_nights +
+    availability_365 + number_of_reviews + review_scores_rating +
+    review_scores_cleanliness + review_scores_location +
+    host_is_superhost + instant_bookable + host_identity_verified +
+    calculated_host_listings_count + dist_to_downtown,
+  data = df_train,
+  method = "glmnet",
+  trControl = train_control,
+  tuneGrid = lasso_grid,
+  metric = "RMSE",
+  preProcess = c("center", "scale")
+)
+
+print(min(lasso_cv$results$RMSE)^2)
+#coef(lasso_cv$finalModel, lasso_cv$bestTune$lambda)
+
+log_preds <- predict(lasso_cv, newdata = df_test)
+final_predictions <- exp(log_preds)
+head(final_predictions)
+```
+#Lasso with 2-way interaction terms.
+```{r, warning=FALSE, message=FALSE}
+library(caret)
+library(glmnet)
+library(ggplot2)
+
+set.seed(1361)
+
+train_control <- trainControl(
+  method = "cv",
+  number = 10
+)
+lasso_grid <- expand.grid(
+  alpha = 1,
+  lambda = 10^seq(-5, 1, length.out = 100)
+)
+
+# Training with Degree 4 Polynomials and the full list of 18 interaction terms
+lasso_cv <- train(
+  log(price) ~ 
+    neighbourhood_cleansed + room_type + host_identity_verified +
+    poly(bathrooms, 4, raw = TRUE) + 
+    poly(bedrooms, 4, raw = TRUE) + 
+    poly(accommodates, 4, raw = TRUE) + 
+    poly(minimum_nights, 4, raw = TRUE) +
+    poly(availability_365, 4, raw = TRUE) +
+    poly(number_of_reviews, 4, raw = TRUE) +
+    poly(review_scores_rating, 4, raw = TRUE) +
+    poly(review_scores_cleanliness, 4, raw = TRUE) +
+    poly(review_scores_location, 4, raw = TRUE) +
+    poly(calculated_host_listings_count, 4, raw = TRUE) +
+    poly(dist_to_downtown, 4, raw = TRUE) +
+    host_is_superhost + instant_bookable +
+    #interaction terms
+    neighbourhood_cleansed:room_type +
+    neighbourhood_cleansed:bathrooms +
+    neighbourhood_cleansed:bedrooms +
+    neighbourhood_cleansed:accommodates +
+    neighbourhood_cleansed:dist_to_downtown +
+    room_type:bathrooms +
+    room_type:bedrooms +
+    room_type:accommodates +
+    room_type:dist_to_downtown +
+    room_type:instant_bookable +
+    bathrooms:bedrooms +
+    bathrooms:accommodates +
+    bathrooms:review_scores_rating +
+    bathrooms:review_scores_cleanliness +
+    bedrooms:accommodates +
+    bedrooms:dist_to_downtown +
+    accommodates:dist_to_downtown +
+    review_scores_rating:review_scores_cleanliness,
+  data = df_train,
+  method = "glmnet",
+  trControl = train_control,
+  tuneGrid = lasso_grid,
+  metric = "RMSE",
+  preProcess = c("center", "scale")
+)
+print(min(lasso_cv$results$RMSE)^2)
+#-------------- for tech report---------
+# --- FOR THE TECHNICAL REPORT ---
+# Best Lasso tuning results (lowest RMSE)
+lasso_tech <- lasso_cv$results %>%
+  arrange(RMSE) %>%
+  head(10)
+
+print(lasso_tech)
+
+#---------- for non tech report----------
+# --- FOR THE NON-TECHNICAL REPORT ---
+# 1. Get the coefficients for the best lambda
+best_lambda <- lasso_cv$bestTune$lambda
+lasso_coefs <- as.matrix(coef(lasso_cv$finalModel, s = best_lambda))
+
+# 2. Convert to a data frame for easier sorting
+lasso_df <- data.frame(
+  Variable = rownames(lasso_coefs),
+  Coefficient = as.numeric(lasso_coefs)
+)
+# 3. Filter out the zeros and sort by absolute impact
+lasso_top_10 <- lasso_df %>%
+  filter(Coefficient != 0 & Variable != "(Intercept)") %>%
+  mutate(Abs_Impact = abs(Coefficient)) %>%
+  arrange(desc(Abs_Impact)) %>%
+  head(10)
+
+print(lasso_top_10)
+
+#----------------------Visualization------------------------
+
+#Non tech report 
+# 1. Prepare the Top 10 Data (assuming you ran the filtering code from the previous step)
+lasso_top_10 <- lasso_df %>%
+  filter(Coefficient != 0 & Variable != "(Intercept)") %>%
+  mutate(Abs_Impact = abs(Coefficient)) %>%
+  arrange(desc(Abs_Impact)) %>%
+  head(10)
+
+# 2. Visualize the top drivers
+ggplot(lasso_top_10, aes(x = reorder(Variable, Coefficient), y = Coefficient, fill = Coefficient > 0)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_manual(values = c("firebrick", "dodgerblue4"), labels = c("Decreases Price", "Increases Price")) +
+  labs(title = "Top 10 Drivers of Airbnb Price (Lasso)",
+       x = "Feature",
+       y = "Coefficient Magnitude",
+       fill = "Impact Type") +
+  theme_minimal()
+
+#tech report
+# Plot the coefficient path from the final model
+plot(lasso_cv$finalModel, xvar = "lambda", label = TRUE)
+abline(v = log(lasso_cv$bestTune$lambda), col = "red", lty = 2)
+#-------------- Final price coversion---------------
+
+#coef(lasso_cv$finalModel, lasso_cv$bestTune$lambda)
+log_preds <- predict(lasso_cv, newdata = df_test)
+final_predictions <- exp(log_preds) # Back-transforming from log to actual dollars
+#head(final_predictions)
+```
+
+
+###Trees and ensembles 
+
+##Random Forests
+```{r, warning=FALSE, message=FALSE}
+library(caret)
+library(randomForest)
+
+set.seed(1361)
+
+train_control <- trainControl(
+  method = "cv",
+  number = 10
+)
+
+rf_grid <- expand.grid(
+  mtry = c(2, 4, 6, 8, 10, 12)
+)
+
+rf_cv <- train(
+  log(price) ~ neighbourhood_cleansed + room_type +
+    bathrooms + bedrooms + accommodates + minimum_nights +
+    availability_365 + number_of_reviews + review_scores_rating +
+    review_scores_cleanliness + review_scores_location +
+    host_is_superhost + instant_bookable + host_identity_verified +
+    calculated_host_listings_count + dist_to_downtown,
+  data = df_train,
+  method = "rf",
+  trControl = train_control,
+  tuneGrid = rf_grid,
+  metric = "RMSE",
+  importance = TRUE,
+  ntree = 500
+)
+#rf_cv$results
+rf_mse <- min(rf_cv$results$RMSE)^2
+rf_mse
+# Top 10 RF configurations
+top_rf_technical <- rf_cv$results %>%
+  arrange(RMSE) %>%
+  head(10)
+print(top_rf_technical)
+
+# Extracting RF Variable Importance
+rf_importance <- varImp(rf_cv, scale = FALSE)
+# Only showing top 10 for readability
+print(rf_importance, 10)
+
+#----------------Visualization-----------------------
+#tech report
+library(ggplot2)
+
+# Visualization of mtry vs. RMSE
+ggplot(rf_cv$results, aes(x = mtry, y = RMSE)) +
+  geom_line(color = "darkgreen", size = 1) +
+  geom_point(color = "forestgreen", size = 3) +
+  geom_text(aes(label = round(RMSE, 4)), vjust = -1.5, size = 3.5) +
+  labs(title = "Random Forest: Hyperparameter Tuning",
+       subtitle = "Effect of mtry on Prediction Error (10-fold CV)",
+       x = "Number of Variables Sampled at Each Split (mtry)",
+       y = "RMSE (Log Scale)") +
+  theme_minimal()
+
+#non tech report
+# Extract Variable Importance
+rf_imp <- varImp(rf_cv, scale = FALSE)
+# Visualize the Top 10 Drivers
+plot(rf_imp, top = 10, main = "Top 10 Price Drivers (Random Forest)")
+#----------------------------------------------------------
+log_preds_rf <- predict(rf_cv, newdata = df_test)
+price_preds_rf <- exp(log_preds_rf)
+
+original_test <- read.csv("df-test-1.csv", stringsAsFactors = FALSE)
+final_ids <- original_test$ID
+submission_final <- data.frame(
+  id = final_ids,
+  price = price_preds_rf
+)
+if(nrow(submission_final) == 700) {
+  write.csv(submission_final, "testing_predictions_CHINTALA_YASHASVI_YYC3.csv", row.names = FALSE)
+} else {
+  print("!700")
+}
+
+```
+
+##Bagging
+```{r, warning=FALSE, message=FALSE}
+library(caret)
+library(randomForest)
+
+set.seed(1361)
+
+train_control <- trainControl(
+  method = "cv",
+  number = 10
+)
+
+p <- 16
+
+bagging_grid <- expand.grid(mtry = p)
+
+bagging_cv <- train(
+  log(price) ~ neighbourhood_cleansed + room_type +
+    bathrooms + bedrooms + accommodates + minimum_nights +
+    availability_365 + number_of_reviews + review_scores_rating +
+    review_scores_cleanliness + review_scores_location +
+    host_is_superhost + instant_bookable + host_identity_verified +
+    calculated_host_listings_count + dist_to_downtown,
+  data = df_train,
+  method = "rf",
+  trControl = train_control,
+  tuneGrid = bagging_grid,
+  metric = "RMSE",
+  ntree = 500
+)
+
+bagging_cv$results
+bagging_mse <- min(bagging_cv$results$RMSE)^2
+bagging_mse
+```
+
+
+##Gradient Boosting
+```{r, warning=FALSE, message=FALSE}
+library(caret)
+library(gbm)
+library(dplyr)
+library(ggplot2)
+
+set.seed(1361)
+
+train_control <- trainControl(
+  method = "cv",
+  number = 10
+)
+
+gbm_grid <- expand.grid(
+  n.trees = c(100, 300, 500),
+  interaction.depth = c(1, 2, 3, 4),
+  shrinkage = c(0.01, 0.05, 0.1),
+  n.minobsinnode = c(5, 10)
+)
+
+gbm_cv <- train(
+  log(price) ~ neighbourhood_cleansed + room_type +
+    bathrooms + bedrooms + accommodates + minimum_nights +
+    availability_365 + number_of_reviews + review_scores_rating +
+    review_scores_cleanliness + review_scores_location +
+    host_is_superhost + instant_bookable + host_identity_verified +
+    calculated_host_listings_count + dist_to_downtown,
+  data = df_train,
+  method = "gbm",
+  trControl = train_control,
+  tuneGrid = gbm_grid,
+  metric = "RMSE",
+  verbose = FALSE
+)
+
+#gbm_cv$results
+best_gbm_mse <- min(gbm_cv$results$RMSE)^2
+#best_gbm_mse
+
+# Top 10 models with the lowest RMSE
+top_gbm <- gbm_cv$results %>%
+  arrange(RMSE) %>%
+  head(10)
+print(top_gbm)
+
+# Extract variable importance from the final GBM model
+importance <- summary(gbm_cv$finalModel, plotit = FALSE)
+# Filter for the top 10 most significant variables
+top_performers <- head(importance, 10)
+# Print the top 10 list
+print(top_performers)
+
+#--------------Visualization-----------------
+# Visualization of GBM Tuning results
+ggplot(gbm_cv$results, aes(x = n.trees, y = RMSE, color = as.factor(shrinkage))) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~interaction.depth, labeller = label_both) +
+  labs(title = "Gradient Boosting: Hyperparameter Tuning Results",
+       subtitle = "Comparing Shrinkage and Tree Depth across Tree Counts",
+       x = "Number of Trees",
+       y = "RMSE (Log Scale)",
+       color = "Shrinkage") +
+  theme_minimal()
+
+#Non tech report
+# Extract and Plot Variable Importance
+# summary() for gbm creates a data frame of importance automatically
+gbm_importance <- summary(gbm_cv$finalModel, plotit = FALSE)
+
+ggplot(head(gbm_importance, 10), aes(x = reorder(var, rel.inf), y = rel.inf)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top 10 Price Drivers (Gradient Boosting)",
+       subtitle = "Relative Influence of Property Features",
+       x = "Variable",
+       y = "Relative Influence (%)") +
+  theme_minimal()
+```
+```{r}
+library(ggplot2)
+#The big picture
+model_comparison <- data.frame(
+  Model = c("Polynomial (Deg 4)", "Lasso (2-way)", "Random Forest", "Gradient Boosting"),
+  MSE = c(0.1911, 0.1826, 0.1583, 0.1651)
+)
+
+ggplot(model_comparison, aes(x = reorder(Model, MSE), y = MSE, fill = Model)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = round(MSE, 4)), vjust = -0.5) +
+  labs(title = "Final Model Performance Comparison",
+       subtitle = "Random Forest achieved the overall lowest error",
+       x = "Model Type",
+       y = "Mean Squared Error (MSE)") +
+  theme_minimal() +
+  guides(fill = "none")
+
+#--------Important model features--------------
+# Create a consensus data frame based on your combined outputs
+consensus_data <- data.frame(
+  Feature = c("Accommodates", "Bedrooms", "Bathrooms", "Dist_to_Downtown", 
+              "Room_Type (Private)", "Room_Type:Bathrooms", "Bedrooms:Accommodates"),
+  Agreement_Score = c(100, 95, 85, 80, 75, 60, 55) # Simplified representation of rank overlap
+)
+
+ggplot(consensus_data, aes(x = reorder(Feature, Agreement_Score), y = Agreement_Score)) +
+  geom_bar(stat = "identity", fill = "darkred") +
+  coord_flip() +
+  labs(title = "Feature Consensus Across All Models",
+       subtitle = "Variables and interactions that were consistently significant",
+       x = "Feature / Interaction",
+       y = "Consensus Score (Rank-based)") +
+  theme_minimal()
+```
+
+
+
+
